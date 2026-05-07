@@ -239,6 +239,7 @@ infra.region.clean:
 .PHONY: infra.region.clean
 
 infra.clean:
+	@rm -rf .step-cache/
 	@cd dev-infrastructure && DEPLOY_ENV=$(DEPLOY_ENV) make clean
 .PHONY: infra.clean
 
