@@ -6,6 +6,42 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is the main repository for Red Hat OpenShift on Azure (ARO) using the Hosted Control Planes (HCP) architecture. It contains some of the code for the required microservices along with most of the configuration and pipeline definition necessary to deploy it.
 
+## Prerequisites
+
+Required tools for development:
+- **Azure CLI** (`az`) >= 2.68.0 - for Azure resource management
+- **Bicep** (latest) - install via `az bicep install`
+- **kubectl** (latest) - install via `az aks install-cli`
+- **make** - for build automation
+- **Go** - workspace uses Go modules (see `go.work`)
+
+Authentication:
+- Red Hat Azure tenant access for dev environments (use `az login --tenant 64dc69e4-d083-49fc-9569-ebece1dd1408 --use-device-code`)
+- Microsoft account for Public/Int environments
+
+All other tools are auto-installed via `make install-tools` using bingo.
+
+## VSCode Remote Containers Setup
+
+The repo includes a `.devcontainer` configuration for VSCode Remote Containers development:
+
+**Requirements:**
+- VSCode from [official downloads](https://code.visualstudio.com/download) (not flatpak)
+- [Remote - Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
+- For macOS: docker CLI and colima (NOT docker desktop)
+  ```bash
+  brew install docker colima
+  colima start --cpu 4 --memory 8 --vz-rosetta --vm-type=vz
+  ```
+
+**Features:**
+- Pre-installed extensions: Go, EditorConfig, Bicep, Azure CLI, Swagger Viewer
+- Auto-installs golangci-lint, Bicep CLI, Azure CLI, nodejs, typespec
+- Mounts host `.gitconfig` for consistent git identity
+- Uses host user for seamless credential sharing
+
+To start: `cmd + shift + P` → `Dev Containers: Rebuild Container`
+
 ## Target Environments
 
 There's a multi-layered build and deploy system supporting multiple target environments with configs under `config/`):
@@ -36,7 +72,7 @@ There's a multi-layered build and deploy system supporting multiple target envir
 Loosely defined categories of deployed objects:
 - Native Azure objects (using bicep files in `dev-infrastructure/`).
   - This includes databases, roles, access definitions, automations, monitoring stack "plumbing", etc. (e.g. global from `dev-infrastructure/global-pipeline.yaml`, regional from `dev-infrastructure/region-pipeline.yaml`, etc.)
-  - But also two types of EKS clusters: Service Clusters and Management Clusters (`dev-infrastructure/mgmt-pipeline.yaml`)
+  - But also two types of AKS clusters: Service Clusters and Management Clusters (`dev-infrastructure/mgmt-pipeline.yaml`)
 - Service Clusters
   – One per supported Azure region
   - Hosts the Resource Provider (frontend and backend) and Cluster Service
@@ -219,10 +255,26 @@ TEST_NAME="test name" make e2e-local/run-test  # Run single test with port-forwa
 Personal dev environments are created per-developer and auto-delete after 48 hours unless `PERSIST=true`.
 
 **Deploy full personal dev stack:**
+```bash
+make personal-dev-env  # Creates full cloud-based dev environment
+```
+
 Check [docs/personal-dev.md](docs/personal-dev.md) for detailed instructions. The deployment process creates:
 - Regional infrastructure (DNS, Event Grid, databases)
 - Service cluster (AKS hosting RP frontend/backend)
 - Management cluster (AKS hosting Hypershift for HCP clusters)
+
+**For local Cluster Service development:**
+```bash
+make local-pers-dev-env  # Adds local dev permissions and config files
+```
+
+The `local-pers-dev-env` target includes everything in `personal-dev-env` plus:
+- Key Vault access permissions for your user
+- OIDC storage access permissions
+- Local config file generation in `cluster-service/local/` (provision-shards, ocp-versions, azure-runtime, azure-operators-mi)
+
+Use this when running Cluster Service locally instead of in Kubernetes.
 
 **Access your clusters:**
 ```bash
@@ -252,6 +304,13 @@ This repo uses Go workspaces (see `go.work`). All modules share dependency versi
 - `make mocks` - Regenerate all mocks (uses mockgen with go:generate comments)
 - `make deepcopy` - Regenerate Kubernetes deepcopy methods
 - `make licenses` - Add Apache 2.0 license headers to Go files
+
+### Configuration Materialization
+- `make materialize` - Process config templates and generate environment-specific configs
+- `make verify-materialize` - Verify materialized configs are up-to-date
+- Part of `make verify` - ensures all templated configs are properly generated
+
+The templatize system processes `config/config.yaml` + overlays + `dev-infrastructure/configurations/` to generate deployment-ready configurations.
 
 ### Image Bumps
 For updating container image digests and versions in `config/config.yaml`, see [tooling/image-updater/AGENTS.md](tooling/image-updater/AGENTS.md) for the complete procedure including:
