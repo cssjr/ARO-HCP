@@ -95,6 +95,8 @@ Loose categorization:
 Incomplete list:
 - **Frontend**: ARM REST API endpoint (`frontend/`) - Go service handling Azure ARM API calls
 - **Backend**: Internal processing service (`backend/`) - Go service for async operations
+- **Admin API**: Administrative REST API (`admin/`) - Deployed on service clusters, provides SRE/operator endpoints for breakglass access, cluster diagnostics, and operational tasks. Triggered via Geneva Actions. Has both client and server components.
+- **Sessiongate**: Kubernetes controller and proxy service (`sessiongate/`) - Provides secure, time-limited, identity-based access to HCP clusters. Uses custom Session CRD, manages ephemeral debugging sessions, and integrates with Istio for authorization.
 - **Cluster Service**: Core cluster management (`cluster-service/`) - Manages HCP cluster lifecycle
 - **Maestro**: Multi-cluster orchestration (`maestro/`) - Handles communication between service and management clusters
 - **Infrastructure**: Azure infrastructure as code (`dev-infrastructure/`) - Bicep templates for all Azure resources
@@ -104,6 +106,8 @@ Incomplete list:
 The github.com/Azure/ARO-Tools repo is also a dependency and changes can be suggested for it.
 
 ## Architecture Details (Multi-file Understanding Required)
+
+A detailed interactive architecture diagram is available at: [Excalidraw Architecture Diagram](https://link.excalidraw.com/l/1NnYvmogbSd/2I3z0Ishpo0)
 
 ### Request Flow: Customer → HCP Cluster
 1. **Customer** makes ARM API call → **Azure ARM** (external)
@@ -115,7 +119,7 @@ The github.com/Azure/ARO-Tools repo is also a dependency and changes can be sugg
 7. **Hypershift** provisions actual HCP cluster control plane and worker nodes
 
 ### Service Cluster vs Management Cluster
-- **Service Cluster**: One per region. Runs RP frontend/backend, Cluster Service, Maestro Server. Handles customer-facing APIs and orchestration. No direct access to ingress - use `kubectl port-forward`.
+- **Service Cluster**: One per region. Runs RP frontend/backend, Admin API, Cluster Service, Maestro Server, Sessiongate. Handles customer-facing APIs, administrative operations, and orchestration. No direct access to ingress - use `kubectl port-forward`.
 - **Management Cluster**: Multiple per region (scales based on HCP count). Runs Hypershift, Maestro Agent, ACM. Hosts actual HCP control planes. Independent from service cluster for resilience.
 
 Resource group naming:
@@ -135,12 +139,15 @@ Resource group naming:
 ### Frontend Development Workflow
 `make run` runs frontend locally. `make deploy` (from `frontend/`) builds a custom dev image, pushes to `arohcpsvcdev` ACR with dev-specific tag, and deploys to personal dev environment. Image naming prevents conflicts between developers. Requires `X-Ms-Identity-Url` header for local testing (can be dummy HTTPS URL ending in `identity.azure.net` for dev environments without real MI data plane).
 
+### Admin API Development Workflow
+`make run` (from `admin/`) runs Admin API locally. `make deploy` builds a custom dev image, pushes to `arohcpsvcdev` ACR with dev-specific tag, and deploys to personal dev environment. Image naming prevents conflicts between developers. Admin API integrates with Geneva Actions for authentication.
+
 ## Additional Build, Configuration and Deployment Info
 
 ### Go Workspace
 The project uses Go workspaces. All Go modules are defined in `go.work`:
-- Main services: `admin`, `backend`, `frontend`, `internal`, `test`
-- Tooling: `tooling/hcpctl`, `tooling/templatize`, etc.
+- Main services: `admin`, `backend`, `frontend`, `sessiongate`, `internal`, `test`, `test-integration`
+- Tooling: `tooling/hcpctl`, `tooling/templatize`, `tooling/image-updater`, and others
 
 ### Environment Configuration
 - Main config: `config/config.yaml` and overlays
