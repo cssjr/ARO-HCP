@@ -1,6 +1,10 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## Project Overview
 
-This is the main repository for Red Hat OpenShift on Azure (ARO) using the Hosted Control Planes (HCP) architecture. It contains code some of the code for the required microservices along with most of the configuration and pipeline definiton necessary to deploy it.
+This is the main repository for Red Hat OpenShift on Azure (ARO) using the Hosted Control Planes (HCP) architecture. It contains some of the code for the required microservices along with most of the configuration and pipeline definition necessary to deploy it.
 
 ## Target Environments
 
@@ -63,6 +67,38 @@ Incomplete list:
 
 The github.com/Azure/ARO-Tools repo is also a dependency and changes can be suggested for it.
 
+## Architecture Details (Multi-file Understanding Required)
+
+### Request Flow: Customer → HCP Cluster
+1. **Customer** makes ARM API call → **Azure ARM** (external)
+2. **ARM** → **Frontend** (service cluster) - validates request, integrates with ARM
+3. **Frontend** → **Cluster Service** (service cluster) - processes cluster lifecycle requests
+4. **Cluster Service** → **Maestro Server** (service cluster) - orchestration layer
+5. **Maestro Server** → **Maestro Agent** (management cluster) - transfers Kubernetes manifests
+6. **Maestro Agent** → **Hypershift Operator** (management cluster) - creates/manages HCP control planes
+7. **Hypershift** provisions actual HCP cluster control plane and worker nodes
+
+### Service Cluster vs Management Cluster
+- **Service Cluster**: One per region. Runs RP frontend/backend, Cluster Service, Maestro Server. Handles customer-facing APIs and orchestration. No direct access to ingress - use `kubectl port-forward`.
+- **Management Cluster**: Multiple per region (scales based on HCP count). Runs Hypershift, Maestro Agent, ACM. Hosts actual HCP control planes. Independent from service cluster for resilience.
+
+Resource group naming:
+- Service: `hcp-underlay-$(regionShort)$(usernameShortPrefix)-svc`
+- Management: `hcp-underlay-$(regionShort)$(usernameShortPrefix)-mgmt-1`
+
+### Infrastructure Scopes
+- **Global**: ACRs (svc-acr, ocp-acr with geo-replication), Azure Front Door for OIDC, parent DNS zones. Lives in one subscription, used by all regions.
+- **Geography**: Kusto clusters per geography (e.g., "United States" has one Kusto deployed by first region in that geo). See [Azure/ARO-Tools ev2config](https://github.com/Azure/ARO-Tools/blob/main/config/ev2config/config.yaml).
+- **Regional**: Per-region resources (Event Grid, DNS zones, databases, Key Vaults). Deployed to both service and management subscriptions.
+
+### Testing Access Patterns
+- **Development/CSPR**: @redhat.com accounts, read/write access. `az` likely already logged in.
+- **Public/Int**: @microsoft.com accounts, mostly read-only. Requires explicit `az login`.
+- **Public/Stage, Public/Prod**: SRE-level access only.
+
+### Frontend Development Workflow
+`make run` runs frontend locally. `make deploy` (from `frontend/`) builds a custom dev image, pushes to `arohcpsvcdev` ACR with dev-specific tag, and deploys to personal dev environment. Image naming prevents conflicts between developers. Requires `X-Ms-Identity-Url` header for local testing (can be dummy HTTPS URL ending in `identity.azure.net` for dev environments without real MI data plane).
+
 ## Additional Build, Configuration and Deployment Info
 
 ### Go Workspace
@@ -121,3 +157,171 @@ Key documentation files:
 - [Service Components](docs/service-components.md)
 - [Environment Details](docs/environments.md)
 - [Deployment Concepts](docs/service-deployment-concept.md)
+- [E2E Test Best Practices](test/AGENTS.md)
+- [Operational Troubleshooting](AGENTS.md) - Essential context for stuck clusters, deletion flows, service cluster APIs, and breakglass access
+
+Operational documentation in `docs/ops/`:
+- [Cleanup Stuck Cluster Deletion](docs/ops/cleanup-stuck-cluster-deletion.md)
+- [Fix Maestro Stale Resource Bundle](docs/ops/fix-maestro-stale-resource-bundle.md)
+- [HCP Cluster Creation Flow](docs/ops/hcp-cluster-creation-flow.md)
+- [Postgres Breakglass](docs/ops/postgres-breakglass.md)
+
+## Common Development Commands
+
+### Building and Testing
+- `make all` - Run tests and linting (default target)
+- `make test` or `make test-unit` - Run all unit tests across Go workspace
+- `make test-compile` - Verify all tests compile without running them
+- `make lint` - Run golangci-lint across all modules
+- `make lint-fix` - Auto-fix linting issues
+- `make install-tools` - Install all development tools via bingo
+- `make fmt` - Format Go code with goimports
+- `make yamlfmt` - Format YAML files
+- `make generate` - Generate deepcopy, mocks, format code, and tidy modules
+- `make verify` - Run all verification checks (deepcopy, json-format, generate, yamlfmt, materialize)
+
+### E2E Testing
+The project uses a custom test runner (`aro-hcp-tests`) built from `test/cmd/aro-hcp-tests/`.
+
+**Build the test binary:**
+```bash
+make -C test  # Builds test/aro-hcp-tests
+```
+
+**List available tests:**
+```bash
+./test/aro-hcp-tests list | jq '.[].name'
+```
+
+**Run a single test by name:**
+```bash
+./test/aro-hcp-tests run-test "Customer should create an HCP cluster and validate TLS certificates"
+```
+
+**Run a test suite:**
+```bash
+./test/aro-hcp-tests run-suite "integration/parallel"
+```
+
+**Run e2e tests locally (requires personal dev environment):**
+```bash
+make e2e/local  # Sets up subscription and runs full e2e suite
+TEST_NAME="test name" make e2e-local/run-test  # Run single test with port-forward
+```
+
+**Environment variables for e2e tests:**
+- `LOCATION` - Azure region (default: westus3)
+- `FRONTEND_ADDRESS` - RP endpoint (default: http://localhost:8443)
+- `SKIP_CERT_VERIFICATION` - Skip TLS verification (default: false)
+- `ARTIFACT_DIR` - Output directory for test artifacts
+
+### Personal Dev Environment
+Personal dev environments are created per-developer and auto-delete after 48 hours unless `PERSIST=true`.
+
+**Deploy full personal dev stack:**
+Check [docs/personal-dev.md](docs/personal-dev.md) for detailed instructions. The deployment process creates:
+- Regional infrastructure (DNS, Event Grid, databases)
+- Service cluster (AKS hosting RP frontend/backend)
+- Management cluster (AKS hosting Hypershift for HCP clusters)
+
+**Access your clusters:**
+```bash
+# Get kubeconfig for service cluster
+export KUBECONFIG=$(make infra.svc.aks.kubeconfigfile)
+
+# Get kubeconfig for management cluster
+export KUBECONFIG=$(make infra.mgmt.aks.kubeconfigfile)
+
+# Port-forward to frontend
+kubectl port-forward svc/aro-hcp-frontend 8443:8443 -n aro-hcp
+```
+
+**Deploy individual services:**
+- `make -C frontend deploy` - Build and deploy frontend to personal dev
+- `make -C backend deploy` - Build and deploy backend to personal dev
+
+### Working with Go Workspace
+This repo uses Go workspaces (see `go.work`). All modules share dependency versions.
+
+- `make work-sync` - Sync go.work with module dependencies
+- `make tidy` - Run `go mod tidy` on all modules
+- `make all-tidy` - Tidy all modules, format code, and add license headers
+- `make bump-aro-tools` - Bump github.com/Azure/ARO-Tools to latest main across all modules
+
+### Mocks and Code Generation
+- `make mocks` - Regenerate all mocks (uses mockgen with go:generate comments)
+- `make deepcopy` - Regenerate Kubernetes deepcopy methods
+- `make licenses` - Add Apache 2.0 license headers to Go files
+
+### Image Bumps
+For updating container image digests and versions in `config/config.yaml`, see [tooling/image-updater/AGENTS.md](tooling/image-updater/AGENTS.md) for the complete procedure including:
+- Bumping single components, multiple components, or all components
+- Post-bump steps (materialize configs, update helm charts)
+- Branch and commit message conventions
+- Repository version upgrades for y-stream updates
+
+## E2E Test Framework Architecture
+
+The e2e test suite uses Ginkgo v2 with custom test organization:
+
+**Key principles:**
+- Tests are self-contained and run in parallel
+- Use `framework.TestContext` for automatic resource cleanup
+- Resource groups created via `tc.NewResourceGroup()` are auto-cleaned after tests
+- All clusters in those resource groups are deleted first, then the RGs
+- Tests use `labels` package for categorization (Importance: Critical/High/Medium/Low, Positivity: Positive/Negative)
+- **Never use Ginkgo Focus (`FIt`, `FDescribe`)** - use CLI filtering instead
+
+**Filtering tests in CI:**
+To run specific tests in PR validation against Int/Stage/Prod, edit `test/cmd/aro-hcp-tests/main.go`:
+```go
+// Uncomment and modify:
+// specs = specs.MustFilter([]string{`name.contains("filter")`})
+```
+**Always revert before merging** to avoid silently skipping tests in CI.
+
+**Test timeouts:**
+- Cluster creation: 45 minutes (standard)
+- Node pool creation: 45 minutes (standard)
+- Use `Eventually` with `WithTimeout()` and `WithPolling()` for async operations
+
+See [test/AGENTS.md](test/AGENTS.md) for complete e2e test design guidelines.
+
+## Important Development Notes
+
+### Lint Tags
+When linting or running tests that include e2e code, use build tag: `LINT_GOTAGS='E2Etests'` (already set in Makefile)
+
+### Bicep Templates
+- Templates in `dev-infrastructure/templates/`
+- Reusable modules in `dev-infrastructure/modules/`
+- Parameter files: `*.bicepparam` with `.tmpl.bicepparam` templates processed by templatize tool
+- E2E test bicep files auto-generated to `test/e2e/test-artifacts/generated-test-artifacts/` from `demo/bicep/` and `test/e2e-setup/bicep/`
+
+### Nil Checks in Tests
+**Critical for e2e tests**: Every `Expect(x).NotTo(BeNil())` **must** include a descriptive message:
+```go
+// Bad - produces unhelpful "Expected nil not to be nil"
+Expect(resp.Properties).NotTo(BeNil())
+
+// Good - clear failure message
+Expect(resp.Properties).NotTo(BeNil(), "cluster response Properties was nil")
+```
+
+### Test Logging in Eventually/Polling
+Use delta-only logging in `Eventually()` blocks - only log when state changes between poll iterations. See `eventuallyVerify` pattern in `test/e2e/cluster_pullsecret.go` for reference. Always log what was expected vs. what was observed on failure.
+
+### Pipeline System
+The repo uses a custom `templatize` tool (`tooling/templatize/`) that processes:
+- `pipeline.yaml` files → deployment pipelines
+- Bicep templates → Azure resource deployment
+- Helm charts → Kubernetes service deployment
+Environment config from `config/config.yaml` + overlays + `dev-infrastructure/configurations/`
+
+### Production Deployment Workflow
+Changes to prod require:
+1. Make changes in this repo
+2. Create PR for `sdp-pipelines` repo (Microsoft ADO)
+3. Manually run updated pipelines in ADO/EV2
+4. See aka.ms/arohcp-pipelines for next steps
+**Remind user of this workflow after making prod-relevant changes.**
